@@ -597,30 +597,81 @@ class CoinAnalyzer:
 
 def create_ma_chart(data: dict):
     """이동평균선 차트 생성"""
-    prices = list(range(1, len(list(data.get('mas', {}).values())) + 2))  # 임시 x축
     price = data.get('price', 0)
     mas = data.get('mas', {})
     
+    if not mas or price == 0:
+        # 데이터가 없을 때 빈 차트 반환
+        fig = go.Figure()
+        fig.add_annotation(
+            text="데이터가 충분하지 않습니다",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False
+        )
+        fig.update_layout(title="현재가 vs 이동평균선", height=400)
+        return fig
+    
     fig = go.Figure()
     
+    # 가격 범위 계산
+    all_values = [price] + [ma for ma in mas.values() if ma is not None]
+    if not all_values:
+        return fig
+        
+    min_price = min(all_values) * 0.95
+    max_price = max(all_values) * 1.05
+    
+    # X축은 단순하게 0-1 범위로 설정
+    x_range = [0, 1]
+    
     # 현재가 라인
-    fig.add_hline(y=price, line_dash="solid", line_color="black", 
-                  annotation_text=f"현재가: {price:,.0f}원")
+    fig.add_shape(
+        type="line",
+        x0=0, x1=1,
+        y0=price, y1=price,
+        line=dict(color="black", width=3, dash="solid"),
+    )
+    fig.add_annotation(
+        x=0.02, y=price,
+        text=f"현재가: {price:,.0f}원",
+        showarrow=True,
+        arrowhead=2,
+        bgcolor="white",
+        bordercolor="black"
+    )
     
     # 이동평균선들
     colors = ['red', 'orange', 'green', 'blue']
     for i, (period, ma_value) in enumerate(mas.items()):
         if ma_value is not None:
             position = "상회" if price > ma_value else "하회"
-            fig.add_hline(y=ma_value, line_dash="dash", 
-                         line_color=colors[i % len(colors)],
-                         annotation_text=f"MA{period}: {ma_value:,.0f} ({position})")
+            color = colors[i % len(colors)]
+            
+            fig.add_shape(
+                type="line",
+                x0=0, x1=1,
+                y0=ma_value, y1=ma_value,
+                line=dict(color=color, width=2, dash="dash"),
+            )
+            fig.add_annotation(
+                x=0.02, y=ma_value,
+                text=f"MA{period}: {ma_value:,.0f}원 ({position})",
+                showarrow=True,
+                arrowhead=2,
+                bgcolor="white",
+                bordercolor=color,
+                yshift=10 if i % 2 == 0 else -10  # 겹치지 않게 위치 조정
+            )
     
     fig.update_layout(
         title="현재가 vs 이동평균선",
+        xaxis_title="",
         yaxis_title="가격 (KRW)",
         height=400,
-        showlegend=False
+        showlegend=False,
+        xaxis=dict(showticklabels=False, range=x_range),
+        yaxis=dict(range=[min_price, max_price]),
+        margin=dict(l=50, r=50, t=50, b=50)
     )
     
     return fig
