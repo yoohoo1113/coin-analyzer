@@ -614,6 +614,27 @@ class CoinAnalyzer:
             "risk_level": risk_level, "risk_factors": risk_factors,
         })
 
+        return analysis_data volume_ma,
+            "bid_ratio": bid_ratio, "spread": spread, "spread_rate": spread_rate,
+            "volume_rank": volume_rank, "total_coins": total_coins,
+            "turnover_rate": turnover_rate, "volume_change_rate": volume_change_rate,
+            "bid_depth": bid_depth, "ask_depth": ask_depth, "total_depth": total_depth,
+            "trade_frequency_data": trade_frequency_data, "btc_relative_strength": btc_relative_strength,
+            "btc_change_rate": btc_change_rate,
+        }
+
+        # 신호 분석
+        signal_score, max_score, positive_signals, negative_signals = self.signal_analyzer.calculate_signal_score(analysis_data)
+        signal_color, signal_text, signal_action = self.signal_analyzer.get_investment_signal(signal_score, max_score)
+        risk_level, risk_factors = self.signal_analyzer.get_risk_assessment(analysis_data)
+
+        analysis_data.update({
+            "signal_score": signal_score, "signal_max_score": max_score,
+            "signal_color": signal_color, "signal_text": signal_text,
+            "positive_signals": positive_signals, "negative_signals": negative_signals,
+            "risk_level": risk_level, "risk_factors": risk_factors,
+        })
+
         return analysis_data
 
 # Streamlit UI 구성
