@@ -7,13 +7,16 @@ from collections import deque
 from datetime import datetime
 import time
 import plotly.graph_objects as go
+import plotly.express as px
 import pandas as pd
+from typing import Dict, List, Optional, Tuple
 
 # Streamlit 페이지 설정
 st.set_page_config(
     page_title="실시간 암호화폐 분석기",
     page_icon="🪙",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 # 설정값들
@@ -70,24 +73,33 @@ class BithumbApi:
             return None
 
     async def get_ticker(self, symbol: str):
+        """현재가 정보 조회"""
         return await self.fetch(f"ticker?markets=KRW-{symbol.upper()}")
 
     async def get_all_tickers(self):
+        """전체 마켓 티커 정보"""
         return await self.fetch("ticker")
 
     async def get_orderbook(self, symbol: str):
+        """호가 정보 조회"""
         return await self.fetch(f"orderbook?markets=KRW-{symbol.upper()}")
 
     async def get_transaction_history(self, symbol: str):
+        """최근 체결 내역"""
         return await self.fetch(f"trades/ticks?market=KRW-{symbol.upper()}&count=200")
 
     async def get_candlestick(self, symbol: str, interval: str = "days"):
+        """캔들스틱 데이터 조회"""
         if interval == "24h" or interval == "days":
             return await self.fetch(f"candles/days?market=KRW-{symbol.upper()}&count={CANDLE_HISTORY_SIZE}")
         elif interval == "1m":
             return await self.fetch(f"candles/minutes/1?market=KRW-{symbol.upper()}&count=1")
         else:
             return await self.fetch(f"candles/days?market=KRW-{symbol.upper()}&count={CANDLE_HISTORY_SIZE}")
+
+    async def get_market_all(self):
+        """마켓 코드 조회"""
+        return await self.fetch("market/all?isDetails=false")
 
 class DataProcessor:
     @staticmethod
@@ -493,12 +505,15 @@ class CoinAnalyzer:
         except (ValueError, KeyError, TypeError) as e:
             return {"error": f"티커 데이터 파싱 오류: {e}"}
 
-        # BTC 데이터 찾기
+        # BTC 데이터 및 거래량 순위 찾기
         btc_change_rate = None
+        volume_rank, total_coins = None, None
         
         if all_tickers and not isinstance(all_tickers, Exception):
             try:
+                # 빗썸 API는 항상 list 형태로 응답
                 if isinstance(all_tickers, list) and len(all_tickers) > 0:
+                    # BTC 데이터 찾기
                     for ticker_item in all_tickers:
                         if isinstance(ticker_item, dict):
                             market = ticker_item.get("market", "")
@@ -509,10 +524,29 @@ class CoinAnalyzer:
                                 except (ValueError, TypeError):
                                     pass
                                 break
+                    
+                    # 거래량으로 정렬하여 순위 계산
+                    try:
+                        # acc_trade_price_24h로 정렬
+                        sorted_tickers = sorted(all_tickers, 
+                                              key=lambda item: float(item.get('acc_trade_price_24h', 0)), 
+                                              reverse=True)
+                        total_coins = len(sorted_tickers)
+                        
+                        # 현재 코인의 순위 찾기
+                        current_market = f"KRW-{self.symbol}"
+                        for rank, ticker_item in enumerate(sorted_tickers, 1):
+                            market = ticker_item.get("market", "")
+                            if market == current_market:
+                                volume_rank = rank
+                                break
+                    except Exception:
+                        pass
+                        
             except Exception:
                 pass
         
-        # BTC 데이터가 없으면 직접 요청
+        # 전체 티커가 없거나 BTC 데이터가 없으면 직접 요청
         if btc_change_rate is None:
             try:
                 btc_ticker = await self.api.get_ticker("BTC")
@@ -575,6 +609,7 @@ class CoinAnalyzer:
             "strength": strength, "mas": mas, "bollinger_bands": {"upper": bb_upper, "middle": bb_mid, "lower": bb_lower},
             "rsi": rsi, "volume": current_volume, "volume_ma": volume_ma,
             "bid_ratio": bid_ratio, "spread": spread, "spread_rate": spread_rate,
+            "volume_rank": volume_rank, "total_coins": total_coins,
             "turnover_rate": turnover_rate, "volume_change_rate": volume_change_rate,
             "bid_depth": bid_depth, "ask_depth": ask_depth, "total_depth": total_depth,
             "trade_frequency_data": trade_frequency_data, "btc_relative_strength": btc_relative_strength,
@@ -595,334 +630,21 @@ class CoinAnalyzer:
 
         return analysis_data
 
-def create_ma_chart(data: dict):
-    """이동평균선 차트 생성"""
-    price = data.get('price', 0)
-    mas = data.get('mas', {})
-    
-    if not mas or price == 0:
-        # 데이터가 없을 때 빈 차트 반환
-        fig = go.Figure()
-        fig.add_annotation(
-            text="데이터가 충분하지 않습니다",
-            xref="paper", yref="paper",
-            x=0.5, y=0.5, showarrow=False
-        )
-        fig.update_layout(title="현재가 vs 이동평균선", height=400)
-        return fig
-    
-    fig = go.Figure()
-    
-    # 가격 범위 계산
-    all_values = [price] + [ma for ma in mas.values() if ma is not None]
-    if not all_values:
-        return fig
-        
-    min_price = min(all_values) * 0.95
-    max_price = max(all_values) * 1.05
-    
-    # X축은 단순하게 0-1 범위로 설정
-    x_range = [0, 1]
-    
-    # 현재가 라인
-    fig.add_shape(
-        type="line",
-        x0=0, x1=1,
-        y0=price, y1=price,
-        line=dict(color="black", width=3, dash="solid"),
-    )
-    fig.add_annotation(
-        x=0.02, y=price,
-        text=f"현재가: {price:,.0f}원",
-        showarrow=True,
-        arrowhead=2,
-        bgcolor="white",
-        bordercolor="black"
-    )
-    
-    # 이동평균선들
-    colors = ['red', 'orange', 'green', 'blue']
-    for i, (period, ma_value) in enumerate(mas.items()):
-        if ma_value is not None:
-            position = "상회" if price > ma_value else "하회"
-            color = colors[i % len(colors)]
-            
-            fig.add_shape(
-                type="line",
-                x0=0, x1=1,
-                y0=ma_value, y1=ma_value,
-                line=dict(color=color, width=2, dash="dash"),
-            )
-            fig.add_annotation(
-                x=0.02, y=ma_value,
-                text=f"MA{period}: {ma_value:,.0f}원 ({position})",
-                showarrow=True,
-                arrowhead=2,
-                bgcolor="white",
-                bordercolor=color,
-                yshift=10 if i % 2 == 0 else -10  # 겹치지 않게 위치 조정
-            )
-    
-    fig.update_layout(
-        title="현재가 vs 이동평균선",
-        xaxis_title="",
-        yaxis_title="가격 (KRW)",
-        height=400,
-        showlegend=False,
-        xaxis=dict(showticklabels=False, range=x_range),
-        yaxis=dict(range=[min_price, max_price]),
-        margin=dict(l=50, r=50, t=50, b=50)
-    )
-    
-    return fig
-
-def display_analysis_results(data: dict):
-    """분석 결과를 한 페이지에 표시"""
-    
-    # 제목
-    st.title(f"🪙 {data['symbol']} 실시간 분석")
-    st.markdown(f"*분석 시각: {data['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}*")
-    st.markdown("---")
-    
-    # 메인 정보
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric(
-            label="현재가",
-            value=f"{data['price']:,.0f} KRW",
-            delta=f"{data['change_rate']:+.2f}%"
-        )
-    
-    with col2:
-        signal_color = data.get('signal_color', '⚪')
-        signal_text = data.get('signal_text', '중립')
-        st.metric(
-            label="투자 신호",
-            value=f"{signal_color} {signal_text}",
-            delta=f"{data.get('signal_score', 0)}/{data.get('signal_max_score', 10)}점"
-        )
-    
-    with col3:
-        risk_level = data.get('risk_level', '🟡 중간')
-        st.metric(
-            label="위험도",
-            value=risk_level.replace('🟢 ', '').replace('🟡 ', '').replace('🔴 ', ''),
-            delta=risk_level.split(' ')[0] if ' ' in risk_level else ''
-        )
-    
-    st.markdown("---")
-    
-    # 이동평균선 차트 (유일한 차트)
-    st.subheader("📈 이동평균선 분석")
-    fig = create_ma_chart(data)
-    st.plotly_chart(fig, use_container_width=True)
-    
-    st.markdown("---")
-    
-    # 기본 정보 섹션
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("💰 기본 정보")
-        st.write(f"**24시간 거래대금**: {data['value_24h']:,.0f} KRW")
-        st.write(f"**거래 상태**: {'❌ 비활성' if data['is_inactive'] else '✅ 활성'}")
-        
-        # BTC 대비 성과
-        if data.get('btc_relative_strength') is not None and data.get('btc_change_rate') is not None:
-            btc_strength = data['btc_relative_strength']
-            btc_rate = data['btc_change_rate']
-            st.write(f"**BTC 변동률**: {btc_rate:+.2f}%")
-            st.write(f"**BTC 대비 강도**: {btc_strength:+.2f}%")
-    
-    with col2:
-        st.subheader("📊 매수/매도 압력")
-        
-        strength = data.get('strength')
-        if strength is not None:
-            st.write(f"**체결강도**: {strength:.2f}% (매수체결비율)")
-        else:
-            st.write("**체결강도**: N/A")
-        
-        bid_ratio = data.get('bid_ratio', 50)
-        st.write(f"**호가비율**: 매수 {bid_ratio:.1f}% | 매도 {100-bid_ratio:.1f}%")
-        
-        spread_rate = data.get('spread_rate', 0)
-        spread_warn = "⚠️ 높음" if spread_rate > SPREAD_RATE_WARN_THRESHOLD else "✅ 양호"
-        st.write(f"**호가스프레드**: {spread_rate:.3f}% ({spread_warn})")
-    
-    st.markdown("---")
-    
-    # 기술적 지표 섹션
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("🔢 기술적 지표")
-        
-        # 이동평균선 정보
-        mas = data.get('mas', {})
-        price = data.get('price', 0)
-        ma_above_count = sum(1 for ma_value in mas.values() if ma_value and price > ma_value)
-        total_mas = len([ma for ma in mas.values() if ma is not None])
-        
-        if total_mas > 0:
-            trend_strength = (ma_above_count / total_mas) * 100
-            if trend_strength >= 75:
-                trend_status = "🚀 강한 상승 추세"
-            elif trend_strength >= 50:
-                trend_status = "📈 상승 추세"
-            elif trend_strength >= 25:
-                trend_status = "📊 혼조"
-            else:
-                trend_status = "📉 하락 추세"
-            st.write(f"**추세 분석**: {trend_status} (이평선 상회: {ma_above_count}/{total_mas})")
-        
-        # RSI
-        rsi = data.get('rsi')
-        if rsi is not None:
-            rsi_status = "과매수" if rsi > 70 else "과매도" if rsi < 30 else "중립"
-            st.write(f"**RSI({RSI_PERIOD})**: {rsi:.2f} ({rsi_status})")
-        
-        # 볼린저 밴드
-        bb = data.get('bollinger_bands', {})
-        if all(bb.values()):
-            position = "상단 돌파" if price > bb['upper'] else "하단 이탈" if price < bb['lower'] else "밴드 내"
-            st.write(f"**볼린저밴드**: {position}")
-            st.write(f"  - 상단: {bb['upper']:,.0f}")
-            st.write(f"  - 중간: {bb['middle']:,.0f}")
-            st.write(f"  - 하단: {bb['lower']:,.0f}")
-    
-    with col2:
-        st.subheader("💧 유동성 및 활성도")
-        
-        # 회전율
-        turnover_rate = data.get('turnover_rate')
-        if turnover_rate is not None:
-            if turnover_rate >= TURNOVER_HIGH_THRESHOLD:
-                turnover_status = "🔥 매우 활발"
-            elif turnover_rate <= TURNOVER_LOW_THRESHOLD:
-                turnover_status = "⚠️ 저조"
-            else:
-                turnover_status = "📊 보통"
-            st.write(f"**회전율**: {turnover_rate:.1f}% ({turnover_status})")
-        
-        # 거래량 변화
-        volume_change = data.get('volume_change_rate')
-        if volume_change is not None:
-            if volume_change >= VOLUME_CHANGE_HIGH_THRESHOLD:
-                volume_status = "⬆️⬆️ 급증"
-            elif volume_change <= -VOLUME_CHANGE_HIGH_THRESHOLD:
-                volume_status = "⬇️⬇️ 급감"
-            elif volume_change >= 5.0:
-                volume_status = "⬆️ 증가"
-            elif volume_change <= -5.0:
-                volume_status = "⬇️ 감소"
-            else:
-                volume_status = "➡️ 보통"
-            st.write(f"**거래량 증가율**: {volume_change:+.1f}% ({volume_status})")
-        
-        # 호가창 깊이
-        total_depth = data.get('total_depth')
-        if total_depth is not None:
-            if total_depth >= DEPTH_LARGE_THRESHOLD:
-                depth_status = "💎 대형"
-            elif total_depth >= DEPTH_SMALL_THRESHOLD:
-                depth_status = "💰 중형"
-            else:
-                depth_status = "📊 소형"
-            st.write(f"**호가창 깊이**: {total_depth:,.0f}원 ({depth_status})")
-        
-        # 실제 거래 빈도
-        trade_freq_data = data.get('trade_frequency_data', {})
-        if trade_freq_data.get('is_real_data', False):
-            freq = trade_freq_data.get('trades_per_minute', 0)
-            status = trade_freq_data.get('status', '')
-            if '매우 활발' in status:
-                freq_icon = "⚡⚡"
-            elif '활발' in status:
-                freq_icon = "⚡"
-            elif '저조' in status:
-                freq_icon = "💤"
-            else:
-                freq_icon = "➡️"
-            st.write(f"**거래빈도**: {freq:.1f}건/분 ({freq_icon} {status})")
-            st.write(f"  - 총 거래: {trade_freq_data.get('total_trades', 0)}건")
-            st.write(f"  - 매수/매도: {trade_freq_data.get('buy_trades', 0)}/{trade_freq_data.get('sell_trades', 0)}건")
-    
-    st.markdown("---")
-    
-    # 투자 신호 섹션
-    st.subheader("🎯 종합 투자 신호")
-    
-    # 신호 점수 표시
-    score = data.get('signal_score', 0)
-    max_score = data.get('signal_max_score', 10)
-    progress_value = score / max_score if max_score > 0 else 0
-    st.progress(progress_value)
-    st.write(f"**종합 점수**: {score}/{max_score}점 ({progress_value*100:.1f}%)")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.write("**✅ 긍정적 요소**")
-        positive_signals = data.get('positive_signals', [])
-        if positive_signals:
-            for signal in positive_signals:
-                st.write(f"• {signal}")
-        else:
-            st.write("• 현재 특별한 긍정적 요소 없음")
-    
-    with col2:
-        st.write("**⚠️ 주의 요소**")
-        negative_signals = data.get('negative_signals', [])
-        risk_factors = data.get('risk_factors', [])
-        warning_items = negative_signals + risk_factors
-        
-        if warning_items:
-            for warning in warning_items:
-                st.write(f"• {warning}")
-        else:
-            st.write("• 현재 특별한 위험 요소 없음")
-    
-    # 거래 가이드
-    st.markdown("---")
-    st.subheader("💡 거래 가이드")
-    
-    signal_text = data.get('signal_text', '중립')
-    price = data.get('price', 0)
-    
-    if "강한 매수" in signal_text:
-        st.success("🔵 적극 매수 고려")
-        st.write(f"• **진입**: 2-3회 분할 매수")
-        st.write(f"• **목표**: +15~25% ({price * 1.15:.0f}~{price * 1.25:.0f}원)")
-        st.write(f"• **손절**: -8% ({price * 0.92:.0f}원)")
-        st.write(f"• **기간**: 1-3주 (단기 스윙)")
-    elif "약한 매수" in signal_text:
-        st.info("🟡 신중 매수 고려")
-        st.write(f"• **진입**: 3-4회 분할 매수")
-        st.write(f"• **목표**: +8~15% ({price * 1.08:.0f}~{price * 1.15:.0f}원)")
-        st.write(f"• **손절**: -6% ({price * 0.94:.0f}원)")
-        st.write(f"• **기간**: 2-4주 (중기)")
-    elif "중립" in signal_text:
-        st.warning("⚪ 관망 또는 DCA")
-        st.write(f"• **진입**: 관망 또는 소액 분할")
-        st.write(f"• **목표**: 변동성 거래")
-        st.write(f"• **손절**: -5% 엄격 준수")
-        st.write(f"• **기간**: 상황 대응")
-    else:
-        st.error("🔴 진입 금지")
-        st.write(f"• **진입**: 매수 금지")
-        st.write(f"• **보유시**: 매도 고려")
-        st.write(f"• **손절**: 즉시 검토")
-        st.write(f"• **기간**: 추세 전환 대기")
-
 # Streamlit UI 구성
 def main():
+    st.title("🪙 실시간 암호화폐 분석기")
+    st.markdown("---")
+    
+    # 사이드바 설정
     st.sidebar.title("설정")
     symbol = st.sidebar.text_input("코인 심볼", value="BTC", help="예: BTC, ETH, GMT").upper()
     auto_refresh = st.sidebar.checkbox("자동 새로고침 (60초)", value=True)
     
     if st.sidebar.button("분석 시작") or auto_refresh:
+        # 세션 상태 초기화
+        if 'api' not in st.session_state:
+            st.session_state.api = None
+        
         # API 초기화
         @st.cache_resource
         def get_api():
@@ -940,6 +662,7 @@ def main():
             return result
         
         # asyncio 실행
+        import asyncio
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -960,6 +683,358 @@ def main():
         if auto_refresh:
             time.sleep(1)
             st.rerun()
+
+def display_analysis_results(data: dict):
+    """분석 결과를 Streamlit UI로 표시"""
+    
+    # 메인 정보 헤더
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric(
+            label=f"{data['symbol']} 현재가",
+            value=f"{data['price']:,.0f} KRW",
+            delta=f"{data['change_rate']:+.2f}%"
+        )
+    
+    with col2:
+        signal_color = data.get('signal_color', '⚪')
+        signal_text = data.get('signal_text', '중립')
+        st.metric(
+            label="투자 신호",
+            value=f"{signal_color} {signal_text}",
+            delta=f"{data.get('signal_score', 0)}/{data.get('signal_max_score', 10)}점"
+        )
+    
+    with col3:
+        volume_rank = data.get('volume_rank')
+        total_coins = data.get('total_coins')
+        if volume_rank and total_coins:
+            st.metric(
+                label="거래량 순위",
+                value=f"{volume_rank}위",
+                delta=f"총 {total_coins}개"
+            )
+        else:
+            st.metric(label="거래량 순위", value="N/A")
+    
+    with col4:
+        risk_level = data.get('risk_level', '🟡 중간')
+        st.metric(
+            label="위험도",
+            value=risk_level.split(' ')[1] if ' ' in risk_level else risk_level,
+            delta=risk_level.split(' ')[0] if ' ' in risk_level else ''
+        )
+    
+    st.markdown("---")
+    
+    # 탭으로 구분
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 시장 분석", "📈 기술적 지표", "🔍 유동성 분석", "🎯 투자 신호"])
+    
+    with tab1:
+        display_market_analysis(data)
+    
+    with tab2:
+        display_technical_analysis(data)
+    
+    with tab3:
+        display_liquidity_analysis(data)
+    
+    with tab4:
+        display_signal_analysis(data)
+
+def display_market_analysis(data: dict):
+    """시장 분석 탭"""
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("기본 정보")
+        
+        # 기본 정보 테이블
+        basic_info = {
+            "현재가": f"{data['price']:,.0f} KRW",
+            "24시간 변동": f"{data['change_rate']:+.2f}%",
+            "24시간 거래대금": f"{data['value_24h']:,.0f} KRW",
+            "거래 상태": "비활성" if data['is_inactive'] else "활성"
+        }
+        
+        for key, value in basic_info.items():
+            st.write(f"**{key}**: {value}")
+    
+    with col2:
+        st.subheader("매수/매도 압력")
+        
+        strength = data.get('strength')
+        if strength is not None:
+            st.write(f"**체결강도**: {strength:.2f}% (매수체결비율)")
+        else:
+            st.write("**체결강도**: N/A")
+        
+        bid_ratio = data.get('bid_ratio', 50)
+        st.write(f"**호가비율**: 매수 {bid_ratio:.1f}% | 매도 {100-bid_ratio:.1f}%")
+        
+        # 호가 비율 차트
+        fig_bid = go.Figure(data=[
+            go.Bar(name='매수', x=['호가'], y=[bid_ratio], marker_color='green'),
+            go.Bar(name='매도', x=['호가'], y=[100-bid_ratio], marker_color='red')
+        ])
+        fig_bid.update_layout(
+            title="호가창 매수/매도 비율",
+            yaxis_title="비율 (%)",
+            barmode='stack',
+            height=300
+        )
+        st.plotly_chart(fig_bid, use_container_width=True)
+    
+    # BTC 대비 성과
+    if data.get('btc_relative_strength') is not None and data.get('btc_change_rate') is not None:
+        st.subheader("BTC 대비 성과")
+        btc_strength = data['btc_relative_strength']
+        btc_rate = data['btc_change_rate']
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("BTC 변동률", f"{btc_rate:+.2f}%")
+        with col2:
+            st.metric(f"{data['symbol']} 변동률", f"{data['change_rate']:+.2f}%")
+        with col3:
+            st.metric("상대적 강도", f"{btc_strength:+.2f}%")
+
+def display_technical_analysis(data: dict):
+    """기술적 지표 탭"""
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("이동평균선")
+        mas = data.get('mas', {})
+        price = data.get('price', 0)
+        
+        ma_data = []
+        for period in MA_PERIODS:
+            ma_value = mas.get(period)
+            if ma_value is not None:
+                position = "상회" if price > ma_value else "하회"
+                deviation = ((price - ma_value) / ma_value) * 100
+                ma_data.append({
+                    "기간": f"MA({period})",
+                    "값": f"{ma_value:,.0f}",
+                    "위치": position,
+                    "편차": f"{deviation:+.1f}%"
+                })
+        
+        if ma_data:
+            df_ma = pd.DataFrame(ma_data)
+            st.dataframe(df_ma, use_container_width=True)
+        
+        # RSI
+        rsi = data.get('rsi')
+        if rsi is not None:
+            st.subheader("RSI (상대강도지수)")
+            
+            # RSI 게이지 차트
+            fig_rsi = go.Figure(go.Indicator(
+                mode = "gauge+number",
+                value = rsi,
+                domain = {'x': [0, 1], 'y': [0, 1]},
+                title = {'text': f"RSI({RSI_PERIOD})"},
+                gauge = {
+                    'axis': {'range': [None, 100]},
+                    'bar': {'color': "darkblue"},
+                    'steps': [
+                        {'range': [0, 30], 'color': "lightgreen"},
+                        {'range': [30, 70], 'color': "lightyellow"},
+                        {'range': [70, 100], 'color': "lightcoral"}
+                    ],
+                    'threshold': {
+                        'line': {'color': "red", 'width': 4},
+                        'thickness': 0.75,
+                        'value': 90
+                    }
+                }
+            ))
+            fig_rsi.update_layout(height=300)
+            st.plotly_chart(fig_rsi, use_container_width=True)
+    
+    with col2:
+        st.subheader("볼린저 밴드")
+        bb = data.get('bollinger_bands', {})
+        if all(bb.values()):
+            position = "상단 돌파" if price > bb['upper'] else "하단 이탈" if price < bb['lower'] else "밴드 내"
+            
+            bb_data = {
+                "상단": f"{bb['upper']:,.0f}",
+                "중간": f"{bb['middle']:,.0f}",
+                "하단": f"{bb['lower']:,.0f}",
+                "현재가 위치": position
+            }
+            
+            for key, value in bb_data.items():
+                st.write(f"**{key}**: {value}")
+        
+        st.subheader("거래량 분석")
+        volume = data.get('volume', 0)
+        volume_ma = data.get('volume_ma')
+        
+        if volume_ma is not None:
+            volume_status = "평균 상회" if volume > volume_ma else "평균 하회"
+            st.write(f"**현재 거래량**: {volume:,.0f}")
+            st.write(f"**평균 대비**: {volume_status}")
+            
+            # 거래량 차트
+            volume_data = pd.DataFrame({
+                '구분': ['현재 거래량', f'{VOLUME_MA_PERIOD}일 평균'],
+                '거래량': [volume, volume_ma]
+            })
+            
+            fig_volume = px.bar(volume_data, x='구분', y='거래량', 
+                              title="거래량 비교")
+            st.plotly_chart(fig_volume, use_container_width=True)
+
+def display_liquidity_analysis(data: dict):
+    """유동성 분석 탭"""
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("회전율 및 거래 활성도")
+        
+        turnover_rate = data.get('turnover_rate')
+        if turnover_rate is not None:
+            st.metric("회전율 (시총대비)", f"{turnover_rate:.1f}%")
+            
+            # 회전율 상태
+            if turnover_rate >= TURNOVER_HIGH_THRESHOLD:
+                st.success("🔥 매우 활발한 거래")
+            elif turnover_rate <= TURNOVER_LOW_THRESHOLD:
+                st.warning("⚠️ 거래 저조")
+            else:
+                st.info("📊 보통 수준")
+        
+        volume_change = data.get('volume_change_rate')
+        if volume_change is not None:
+            st.metric("거래량 증가율 (24H)", f"{volume_change:+.1f}%")
+            
+            if volume_change >= VOLUME_CHANGE_HIGH_THRESHOLD:
+                st.success("⬆️⬆️ 관심도 급증")
+            elif volume_change <= -VOLUME_CHANGE_HIGH_THRESHOLD:
+                st.error("⬇️⬇️ 관심도 급감")
+    
+    with col2:
+        st.subheader("호가창 깊이")
+        
+        total_depth = data.get('total_depth')
+        bid_depth = data.get('bid_depth')
+        ask_depth = data.get('ask_depth')
+        
+        if all([total_depth, bid_depth, ask_depth]):
+            st.metric("총 호가창 깊이", f"{total_depth:,.0f} 원")
+            
+            # 호가창 깊이 차트
+            depth_data = pd.DataFrame({
+                '구분': ['매수 호가', '매도 호가'],
+                '금액': [bid_depth, ask_depth]
+            })
+            
+            fig_depth = px.pie(depth_data, values='금액', names='구분',
+                             title="호가창 구성 비율")
+            st.plotly_chart(fig_depth, use_container_width=True)
+            
+            # 깊이 상태
+            if total_depth >= DEPTH_LARGE_THRESHOLD:
+                st.success("💎 대형 호가창 - 안정적 유동성")
+            elif total_depth >= DEPTH_SMALL_THRESHOLD:
+                st.info("💰 중형 호가창")
+            else:
+                st.warning("📊 소형 호가창 - 슬리피지 위험")
+    
+    # 실제 거래 빈도
+    st.subheader("실제 거래 빈도")
+    trade_freq_data = data.get('trade_frequency_data', {})
+    
+    if trade_freq_data.get('is_real_data', False):
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("분당 거래건수", f"{trade_freq_data.get('trades_per_minute', 0):.1f}건")
+        
+        with col2:
+            st.metric("총 거래건수", f"{trade_freq_data.get('total_trades', 0)}건")
+        
+        with col3:
+            st.metric("매수 거래", f"{trade_freq_data.get('buy_trades', 0)}건")
+        
+        with col4:
+            st.metric("매도 거래", f"{trade_freq_data.get('sell_trades', 0)}건")
+        
+        status = trade_freq_data.get('status', '')
+        if '매우 활발' in status:
+            st.success(f"⚡⚡ {status}")
+        elif '활발' in status:
+            st.success(f"⚡ {status}")
+        elif '저조' in status:
+            st.warning(f"💤 {status}")
+        else:
+            st.info(f"➡️ {status}")
+
+def display_signal_analysis(data: dict):
+    """투자 신호 탭"""
+    
+    # 종합 신호
+    st.subheader("🚀 종합 투자 신호")
+    
+    score = data.get('signal_score', 0)
+    max_score = data.get('signal_max_score', 10)
+    signal_color = data.get('signal_color', '⚪')
+    signal_text = data.get('signal_text', '중립')
+    
+    # 신호 점수 프로그레스 바
+    progress_value = score / max_score if max_score > 0 else 0
+    st.progress(progress_value)
+    st.write(f"**종합 신호**: {signal_color} {signal_text} ({score}/{max_score}점)")
+    
+    # 위험도
+    risk_level = data.get('risk_level', '🟡 중간')
+    st.write(f"**위험도 평가**: {risk_level}")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("📈 긍정적 요소")
+        positive_signals = data.get('positive_signals', [])
+        if positive_signals:
+            for signal in positive_signals:
+                st.success(f"✅ {signal}")
+        else:
+            st.info("현재 특별한 긍정적 요소가 없습니다.")
+    
+    with col2:
+        st.subheader("⚠️ 주의 요소")
+        negative_signals = data.get('negative_signals', [])
+        risk_factors = data.get('risk_factors', [])
+        
+        warning_items = negative_signals + risk_factors
+        if warning_items:
+            for warning in warning_items:
+                st.warning(f"🔸 {warning}")
+        else:
+            st.success("현재 특별한 위험 요소가 없습니다.")
+    
+    # 거래 전략 (간단한 추천)
+    st.subheader("💡 거래 가이드")
+    
+    if "강한 매수" in signal_text:
+        st.success("🔵 적극 매수 고려 (2-3회 분할)")
+        st.info("🎯 목표: +15~25% | 🛑 손절: -8%")
+        st.info("⏰ 투자기간: 1-3주 (단기 스윙)")
+    elif "약한 매수" in signal_text:
+        st.info("🟡 신중 매수 고려 (3-4회 분할)")
+        st.info("🎯 목표: +8~15% | 🛑 손절: -6%")
+        st.info("⏰ 투자기간: 2-4주 (중기)")
+    elif "중립" in signal_text:
+        st.warning("⚪ 관망 또는 DCA 고려")
+        st.info("🎯 변동성 거래 | 🛑 -5% 엄격 준수")
+    else:
+        st.error("🔴 진입 금지")
+        st.info("🎯 매도 고려 | 🛑 손절 우선")
 
 if __name__ == "__main__":
     main()
