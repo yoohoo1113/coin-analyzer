@@ -73,24 +73,33 @@ class BithumbApi:
             return None
 
     async def get_ticker(self, symbol: str):
+        """현재가 정보 조회"""
         return await self.fetch(f"ticker?markets=KRW-{symbol.upper()}")
 
     async def get_all_tickers(self):
-        return await self.fetch("ticker?markets=KRW-BTC,KRW-ETH,KRW-XRP,KRW-ONDO,KRW-GMT")
+        """전체 마켓 티커 정보"""
+        return await self.fetch("ticker")
 
     async def get_orderbook(self, symbol: str):
+        """호가 정보 조회"""
         return await self.fetch(f"orderbook?markets=KRW-{symbol.upper()}")
 
     async def get_transaction_history(self, symbol: str):
+        """최근 체결 내역"""
         return await self.fetch(f"trades/ticks?market=KRW-{symbol.upper()}&count=200")
 
     async def get_candlestick(self, symbol: str, interval: str = "days"):
+        """캔들스틱 데이터 조회"""
         if interval == "24h" or interval == "days":
             return await self.fetch(f"candles/days?market=KRW-{symbol.upper()}&count={CANDLE_HISTORY_SIZE}")
         elif interval == "1m":
             return await self.fetch(f"candles/minutes/1?market=KRW-{symbol.upper()}&count=1")
         else:
             return await self.fetch(f"candles/days?market=KRW-{symbol.upper()}&count={CANDLE_HISTORY_SIZE}")
+
+    async def get_market_all(self):
+        """마켓 코드 조회"""
+        return await self.fetch("market/all?isDetails=false")
 
 class DataProcessor:
     @staticmethod
@@ -459,6 +468,11 @@ class CoinAnalyzer:
         return None
 
     async def run_analysis(self):
+        # 먼저 마켓 코드 확인
+        market_check = await self.api.get_ticker(self.symbol)
+        if not market_check or isinstance(market_check, Exception):
+            return {"error": f"'{self.symbol}' 코인을 찾을 수 없습니다. 올바른 심볼인지 확인해주세요."}
+        
         try:
             results = await asyncio.gather(
                 self.api.get_ticker(self.symbol),
@@ -491,56 +505,56 @@ class CoinAnalyzer:
         except (ValueError, KeyError, TypeError) as e:
             return {"error": f"티커 데이터 파싱 오류: {e}"}
 
-        # BTC 데이터 찾기
+        # BTC 데이터 및 거래량 순위 찾기
         btc_change_rate = None
         volume_rank, total_coins = None, None
         
-        if all_tickers:
+        if all_tickers and not isinstance(all_tickers, Exception):
             try:
-                if isinstance(all_tickers, dict) and len(all_tickers) > 0:
-                    if "KRW-BTC" in all_tickers:
-                        btc_data = all_tickers["KRW-BTC"]
-                        btc_signed_change = btc_data.get("signed_change_rate", "0")
-                        btc_change_rate = float(btc_signed_change) * 100
-                        
-                    ticker_items = []
-                    for market, data in all_tickers.items():
-                        if isinstance(data, dict):
-                            data['market'] = market
-                            ticker_items.append(data)
-                    
-                    sorted_tickers = sorted(ticker_items, 
-                                          key=lambda item: float(item.get('acc_trade_price_24h', 0)), 
-                                          reverse=True)
-                    total_coins = len(sorted_tickers)
-                    
-                    for rank, ticker_item in enumerate(sorted_tickers, 1):
-                        if ticker_item.get("market") == f"KRW-{self.symbol}":
-                            volume_rank = rank
-                            break
-                            
-                elif isinstance(all_tickers, list) and len(all_tickers) > 0:
+                # 빗썸 API는 항상 list 형태로 응답
+                if isinstance(all_tickers, list) and len(all_tickers) > 0:
+                    # BTC 데이터 찾기
                     for ticker_item in all_tickers:
-                        market = ticker_item.get("market", "")
-                        if market == "KRW-BTC":
-                            try:
-                                signed_change = ticker_item.get("signed_change_rate", "N/A")
-                                btc_change_rate = float(signed_change) * 100
-                            except (ValueError, TypeError):
-                                pass
-                            break
+                        if isinstance(ticker_item, dict):
+                            market = ticker_item.get("market", "")
+                            if market == "KRW-BTC":
+                                try:
+                                    signed_change = ticker_item.get("signed_change_rate", 0)
+                                    btc_change_rate = float(signed_change) * 100
+                                except (ValueError, TypeError):
+                                    pass
+                                break
                     
-                    sorted_tickers = sorted(all_tickers, 
-                                          key=lambda item: float(item.get('acc_trade_price_24h', 0)), 
-                                          reverse=True)
-                    total_coins = len(sorted_tickers)
-                    
-                    for rank, ticker_item in enumerate(sorted_tickers, 1):
-                        if ticker_item.get("market") == f"KRW-{self.symbol}":
-                            volume_rank = rank
-                            break
-                            
-            except Exception as e:
+                    # 거래량으로 정렬하여 순위 계산
+                    try:
+                        # acc_trade_price_24h로 정렬
+                        sorted_tickers = sorted(all_tickers, 
+                                              key=lambda item: float(item.get('acc_trade_price_24h', 0)), 
+                                              reverse=True)
+                        total_coins = len(sorted_tickers)
+                        
+                        # 현재 코인의 순위 찾기
+                        current_market = f"KRW-{self.symbol}"
+                        for rank, ticker_item in enumerate(sorted_tickers, 1):
+                            market = ticker_item.get("market", "")
+                            if market == current_market:
+                                volume_rank = rank
+                                break
+                    except Exception:
+                        pass
+                        
+            except Exception:
+                pass
+        
+        # 전체 티커가 없거나 BTC 데이터가 없으면 직접 요청
+        if btc_change_rate is None:
+            try:
+                btc_ticker = await self.api.get_ticker("BTC")
+                if btc_ticker and isinstance(btc_ticker, list) and len(btc_ticker) > 0:
+                    btc_data = btc_ticker[0]
+                    btc_signed_change = btc_data.get("signed_change_rate", 0)
+                    btc_change_rate = float(btc_signed_change) * 100
+            except Exception:
                 pass
 
         strength = await self.calculate_strength() if not is_inactive else None
@@ -594,27 +608,6 @@ class CoinAnalyzer:
             "change_rate": change_rate, "value_24h": acc_trade_price_24h, "is_inactive": is_inactive,
             "strength": strength, "mas": mas, "bollinger_bands": {"upper": bb_upper, "middle": bb_mid, "lower": bb_lower},
             "rsi": rsi, "volume": current_volume, "volume_ma": volume_ma,
-            "bid_ratio": bid_ratio, "spread": spread, "spread_rate": spread_rate,
-            "volume_rank": volume_rank, "total_coins": total_coins,
-            "turnover_rate": turnover_rate, "volume_change_rate": volume_change_rate,
-            "bid_depth": bid_depth, "ask_depth": ask_depth, "total_depth": total_depth,
-            "trade_frequency_data": trade_frequency_data, "btc_relative_strength": btc_relative_strength,
-            "btc_change_rate": btc_change_rate,
-        }
-
-        # 신호 분석
-        signal_score, max_score, positive_signals, negative_signals = self.signal_analyzer.calculate_signal_score(analysis_data)
-        signal_color, signal_text, signal_action = self.signal_analyzer.get_investment_signal(signal_score, max_score)
-        risk_level, risk_factors = self.signal_analyzer.get_risk_assessment(analysis_data)
-
-        analysis_data.update({
-            "signal_score": signal_score, "signal_max_score": max_score,
-            "signal_color": signal_color, "signal_text": signal_text,
-            "positive_signals": positive_signals, "negative_signals": negative_signals,
-            "risk_level": risk_level, "risk_factors": risk_factors,
-        })
-
-        return analysis_data volume_ma,
             "bid_ratio": bid_ratio, "spread": spread, "spread_rate": spread_rate,
             "volume_rank": volume_rank, "total_coins": total_coins,
             "turnover_rate": turnover_rate, "volume_change_rate": volume_change_rate,
