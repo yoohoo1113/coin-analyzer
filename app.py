@@ -93,7 +93,7 @@ class BithumbApi:
             
             # 각 마켓의 티커 정보를 개별 조회
             all_tickers = []
-            for market in krw_markets[:50]:  # 최대 50개로 제한 (API 부하 방지)
+            for market in krw_markets[:100]:  # 최대 100개로 확장
                 symbol = market.replace('KRW-', '')
                 ticker_data = await self.get_ticker(symbol)
                 if ticker_data and isinstance(ticker_data, list) and len(ticker_data) > 0:
