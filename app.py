@@ -527,10 +527,19 @@ class CoinAnalyzer:
                     
                     # 거래량으로 정렬하여 순위 계산
                     try:
-                        # acc_trade_price_24h로 정렬
-                        sorted_tickers = sorted(all_tickers, 
-                                              key=lambda item: float(item.get('acc_trade_price_24h', 0)), 
-                                              reverse=True)
+                        # KRW 마켓만 필터링 후 acc_trade_price_24h로 정렬
+                        krw_tickers = [
+                            ticker for ticker in all_tickers 
+                            if isinstance(ticker, dict) and 
+                            ticker.get("market", "").startswith("KRW-") and
+                            ticker.get("acc_trade_price_24h", 0) is not None
+                        ]
+                        
+                        sorted_tickers = sorted(
+                            krw_tickers, 
+                            key=lambda item: float(item.get('acc_trade_price_24h', 0)), 
+                            reverse=True
+                        )
                         total_coins = len(sorted_tickers)
                         
                         # 현재 코인의 순위 찾기
