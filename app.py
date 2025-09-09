@@ -78,7 +78,34 @@ class BithumbApi:
 
     async def get_all_tickers(self):
         """전체 마켓 티커 정보"""
-        return await self.fetch("ticker")
+        # 빗썸 v1 API는 전체 티커를 다르게 조회
+        try:
+            # 먼저 마켓 목록 조회
+            markets = await self.fetch("market/all?isDetails=false")
+            if not markets:
+                return None
+            
+            # KRW 마켓만 필터링
+            krw_markets = [market.get('market') for market in markets if market.get('market', '').startswith('KRW-')]
+            
+            if not krw_markets:
+                return None
+            
+            # 각 마켓의 티커 정보를 개별 조회
+            all_tickers = []
+            for market in krw_markets[:50]:  # 최대 50개로 제한 (API 부하 방지)
+                symbol = market.replace('KRW-', '')
+                ticker_data = await self.get_ticker(symbol)
+                if ticker_data and isinstance(ticker_data, list) and len(ticker_data) > 0:
+                    ticker_info = ticker_data[0]
+                    ticker_info['market'] = market  # market 필드 추가
+                    all_tickers.append(ticker_info)
+            
+            return all_tickers
+            
+        except Exception as e:
+            # 실패 시 기본 ticker API 시도
+            return await self.fetch("ticker")
 
     async def get_orderbook(self, symbol: str):
         """호가 정보 조회"""
